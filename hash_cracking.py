@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+# by Kumar
+import subprocess
+import os
+from rich.console import Console
+from rich.prompt import Prompt
+from rich.progress import Progress, SpinnerColumn, TextColumn
+import shutil
+
+console = Console()
+
+# Banner
+console.print("[bold bright_cyan]╔══════════════════════════════╗[/bold bright_cyan]")
+console.print("[bold bright_cyan]║ Password Cracking Tool       ║[/bold bright_cyan]")
+console.print("[bold bright_cyan]║ by Kumar                     ║[/bold bright_cyan]")
+console.print("[bold bright_cyan]╚══════════════════════════════╝[/bold bright_cyan]")
+
+DEFAULT_OUTPUT = "crack_output.txt"
+TMUX_CMD = shutil.which("tmux")
+if not TMUX_CMD:
+    console.print("[bold red]Error:[/bold red] tmux is not installed.")
+    exit(1)
+
+def ask_common_inputs_for_hashcat_john():
+    try:
+        hash_or_file = Prompt.ask("💬 Do you want to provide a hash file path or a hash value? (Enter 'file' or 'hash')", choices=["file", "hash"], default="hash")
+        if hash_or_file == "hash":
+            hash_value = Prompt.ask("🔑 Enter the hash value directly")
+            return hash_value.strip(), None
+        elif hash_or_file == "file":
+            hash_file = Prompt.ask("📂 Enter the path to the hash file")
+            return None, hash_file.strip()
+    except KeyboardInterrupt:
+        console.print("\n[bold yellow]Cancelled.[/bold yellow] Returning to main menu.")
+        return None, None
+
+def ask_wordlist_and_mode():
+    wordlist = Prompt.ask("🔑 Enter the path to the wordlist", default="/usr/share/wordlists/rockyou.txt")
+    mode = Prompt.ask("🔑 Enter the hash mode (default MD5, 0 for MD5)", default="0")
+    return wordlist.strip(), mode.strip()
+
+def ask_output_file():
+    filename = Prompt.ask("📅 Enter output filename", default=DEFAULT_OUTPUT)
+    path = Prompt.ask("📁 Enter output directory (leave blank for current directory)", default="")
+    return os.path.join(path.strip() or ".", filename.strip())
+
+def launch_in_tmux(tool_name, command, output_path=None):
+    try:
+        session_name = f"{tool_name}_session"
+        subprocess.call(["tmux", "kill-session", "-t", session_name], stderr=subprocess.DEVNULL)
+        if output_path:
+            command += f" > {output_path} 2>&1; read -p 'Press enter to return to menu...'"
+        else:
+            command += "; read -p 'Press enter to return to menu...'"
+
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
+            progress.add_task("Spawning tmux session...", total=None)
+
+        subprocess.call(["tmux", "new-session", "-s", session_name, "sh", "-c", command])
+        console.print(f"\n✅ {tool_name} session ended. Returning to menu...\n")
+    except Exception as e:
+        console.print(f"[bold red]Error launching '{tool_name}':[/bold red] {e}")
+
+def run_hashcat():
+    hash_value, hash_file = ask_common_inputs_for_hashcat_john()
+    if not hash_value and not hash_file:
+        return
+    wordlist, mode = ask_wordlist_and_mode()
+    output_path = ask_output_file()
+
+    if hash_value:
+        cmd = f"echo '{hash_value}' > temp_hash.txt && hashcat -m {mode} temp_hash.txt {wordlist} -o {output_path}"
+    elif hash_file:
+        cmd = f"hashcat -m {mode} -a 0 -o {output_path} {hash_file} {wordlist}"
+
+    launch_in_tmux("hashcat", cmd, output_path)
+
+def run_john():
+    hash_value, hash_file = ask_common_inputs_for_hashcat_john()
+    if not hash_value and not hash_file:
+        return
+    wordlist, _ = ask_wordlist_and_mode()
+    output_path = ask_output_file()
+
+    if hash_value:
+        with open("temp_hash.txt", "w") as f:
+            f.write(hash_value + "\n")
+        cmd = f"john --wordlist={wordlist} --format=raw-md5 temp_hash.txt && john --show --format=raw-md5 temp_hash.txt > {output_path}"
+    elif hash_file:
+        cmd = f"john --wordlist={wordlist} --format=raw-md5 {hash_file} && john --show --format=raw-md5 {hash_file} > {output_path}"
+
+    launch_in_tmux("john", cmd, output_path)
+
+def main():
+    while True:
+        console.print("\n[bold magenta]=== Password Cracking Menu ===[/bold magenta]")
+        console.print("[cyan][1][/cyan] hash-identifier")
+        console.print("[cyan][2][/cyan] hashcat")
+        console.print("[cyan][3][/cyan] john")
+        console.print("[cyan][4][/cyan] Exit")
+
+        choice = Prompt.ask("👉 Select an option", default="1").strip()
+
+        if choice == "1":
+            console.print("[bold green]Running hash-identifier...[/bold green]")
+            cmd = "hash-identifier"
+            launch_in_tmux("hash-identifier", cmd)
+        elif choice == "2":
+            run_hashcat()
+        elif choice == "3":
+            run_john()
+        elif choice == "4":
+            console.print("[bold green]Exiting...[/bold green]")
+            break
+        else:
+            console.print("[red]Invalid selection. Choose between 1-4.[/red]")
+
+if __name__ == "__main__":
+    main()
