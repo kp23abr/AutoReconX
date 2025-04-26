@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+    #!/usr/bin/env python3
 """
 subdomain_enumeration.py
 
@@ -11,6 +11,7 @@ import sys
 import shutil
 import os
 import time
+from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
@@ -33,27 +34,32 @@ def show_banner():
 
 def ask_common_inputs(tool):
     try:
-        host = Prompt.ask("🌐 [cyan]Enter target Host/IP[/cyan]")
-        port = Prompt.ask("🔗 [cyan]Port[/cyan]", default="80")
+        host = Prompt.ask("🌐 [cyan]Enter target Host/IP[/cyan]").strip()
+        port = Prompt.ask("🔗 [cyan]Port[/cyan]", default="80").strip()
         use_default = Confirm.ask("📂 [cyan]Use default wordlist?[/cyan]", default=True)
-        if use_default:
-            wordlist = DEFAULT_WORDLIST
-        else:
-            wordlist = Prompt.ask("📄 [cyan]Path to your custom wordlist[/cyan]")
-        return host.strip(), port.strip(), wordlist.strip()
+        wordlist = DEFAULT_WORDLIST if use_default else Prompt.ask("📄 [cyan]Path to your custom wordlist[/cyan]").strip()
+        return host, port, wordlist
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Cancelled.[/bold yellow] Returning to main menu.")
         return None, None, None
 
 def ask_filter_options():
-    fs = Prompt.ask("[cyan]Enter -fs (filter size) if needed[/cyan]", default="", show_default=False)
-    fw = Prompt.ask("[cyan]Enter -fw (filter words) if needed[/cyan]", default="", show_default=False)
-    return fs.strip(), fw.strip()
+    fs = Prompt.ask("[cyan]Enter -fs (filter size) if needed[/cyan]", default="", show_default=False).strip()
+    fw = Prompt.ask("[cyan]Enter -fw (filter words) if needed[/cyan]", default="", show_default=False).strip()
+    return fs, fw
 
-def ask_output_path(tool):
-    filename = Prompt.ask("📅 [green]Enter output filename[/green]", default=f"{tool}_output.txt")
-    path = Prompt.ask("📁 [cyan]Enter output directory[/cyan] (leave blank for current directory)", default="")
-    return os.path.join(path.strip() or ".", filename.strip())
+# --- NEW: manual vs auto output ---
+def ask_output_manual(tool):
+    filename = Prompt.ask(f"💾 Enter output filename (without extension) for {tool}", default="").strip()
+    directory = Prompt.ask("📂 Enter output directory (leave blank for auto)", default="").strip()
+    return filename, directory
+
+def make_auto_folder(name):
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    folder = f"{name.replace('.', '_')}_{ts}"
+    os.makedirs(folder, exist_ok=True)
+    return folder
+# --------------------------------------
 
 def launch_in_tmux(tool_name, command, output_path=None):
     try:
@@ -63,11 +69,9 @@ def launch_in_tmux(tool_name, command, output_path=None):
             command += f" | tee {output_path}; read -p 'Press enter to return to menu...'"
         else:
             command += "; read -p 'Press enter to return to menu...'"
-
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
             progress.add_task("Spawning tmux session...", total=None)
             time.sleep(1)
-
         subprocess.call(["tmux", "new-session", "-s", session_name, "sh", "-c", command])
         console.print(f"\n✅ [green]{tool_name} session ended.[/green] Returning to menu...\n")
     except Exception as e:
@@ -78,20 +82,54 @@ def run_ffuf():
     if not host:
         return
     fs, fw = ask_filter_options()
-    output_path = ask_output_path("ffuf")
+    fn, dir_ = ask_output_manual("ffuf")
+    if fn == "" and dir_ == "":
+        folder = make_auto_folder(host)
+        output_path = os.path.join(folder, f"ffuf_{host}.txt")
+    else:
+        if dir_:
+            os.makedirs(dir_, exist_ok=True)
+        else:
+            dir_ = "."
+        output_path = os.path.join(dir_, f"{fn or 'ffuf_output'}.txt")
+
     filter_flags = f"-fs {fs}" if fs else (f"-fw {fw}" if fw else "")
     cmd = f"ffuf -w {wordlist} -u http://{host}:{port} -H \"Host: FUZZ.{host}\" {filter_flags}"
     launch_in_tmux("ffuf", cmd, output_path)
 
 def run_sublist3r():
-    host = Prompt.ask("🌐 [cyan]Enter domain name for Sublist3r[/cyan]")
-    output_path = ask_output_path("sublist3r")
+    host = Prompt.ask("🌐 [cyan]Enter domain name for Sublist3r[/cyan]").strip()
+    if not host:
+        return
+    fn, dir_ = ask_output_manual("sublist3r")
+    if fn == "" and dir_ == "":
+        folder = make_auto_folder(host)
+        output_path = os.path.join(folder, f"sublist3r_{host}.txt")
+    else:
+        if dir_:
+            os.makedirs(dir_, exist_ok=True)
+        else:
+            dir_ = "."
+        output_path = os.path.join(dir_, f"{fn or 'sublist3r_output'}.txt")
+
     cmd = f"sublist3r -d {host} -o {output_path}"
     launch_in_tmux("sublist3r", cmd)
 
 def run_subfinder():
-    host = Prompt.ask("🌐 [cyan]Enter domain name for Subfinder[/cyan]")
-    output_path = ask_output_path("subfinder")
+    host = Prompt.ask("🌐 [cyan]Enter domain name for Subfinder[/cyan]").strip()
+    if not host:
+        return
+    fn, dir_ = ask_output_manual("subfinder")
+    if fn == "" and dir_ == "":
+        folder = make_auto_folder(host)
+        output_path = os.path.join(folder, f"subfinder_{host}.txt")
+    else:
+        if dir_:
+            os.makedirs(dir_, exist_ok=True)
+        else:
+            dir_ = "."
+        output_path = os.path.join(dir_, f"{fn or 'subfinder_output'}.txt")
+
     cmd = f"subfinder -d {host} -o {output_path}"
     launch_in_tmux("subfinder", cmd)
 
@@ -99,7 +137,17 @@ def run_gobuster():
     host, port, wordlist = ask_common_inputs("gobuster")
     if not host:
         return
-    output_path = ask_output_path("gobuster")
+    fn, dir_ = ask_output_manual("gobuster")
+    if fn == "" and dir_ == "":
+        folder = make_auto_folder(host)
+        output_path = os.path.join(folder, f"gobuster_{host}.txt")
+    else:
+        if dir_:
+            os.makedirs(dir_, exist_ok=True)
+        else:
+            dir_ = "."
+        output_path = os.path.join(dir_, f"{fn or 'gobuster_output'}.txt")
+
     cmd = f"gobuster dns -d {host} -w {wordlist} -o {output_path}"
     launch_in_tmux("gobuster", cmd)
 
