@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 # by Kumar
+"""
+Password Cracking Tool
+Supports: hash-identifier, hashcat, john
+Each runs in its own tmux session.
+Prompt sequence for each tool:
+ 1. For all: ask output filename & directory (blank → auto timestamped folder)
+ 2. For hashcat/john: ask hash input type, then value/path, then wordlist/mode
+Hash-identifier runs interactively in tmux (user types hash there).
+All output is both live in tmux and saved via tee.
+"""
 import subprocess
 import os
+import shutil
 from datetime import datetime
 from rich.console import Console
 from rich.prompt import Prompt
-from rich.progress import Progress, SpinnerColumn, TextColumn
-import shutil
 
 console = Console()
 
@@ -16,137 +25,133 @@ console.print("[bold bright_cyan]║ Password Cracking Tool       ║[/bold brig
 console.print("[bold bright_cyan]║ by Kumar                     ║[/bold bright_cyan]")
 console.print("[bold bright_cyan]╚══════════════════════════════╝[/bold bright_cyan]")
 
-DEFAULT_OUTPUT = "crack_output.txt"
-TMUX_CMD = shutil.which("tmux")
-if not TMUX_CMD:
+TMUX = shutil.which("tmux")
+if not TMUX:
     console.print("[bold red]Error:[/bold red] tmux is not installed.")
     exit(1)
 
-def ask_common_inputs_for_hashcat_john():
-    try:
-        hash_or_file = Prompt.ask(
-            "💬 Do you want to provide a hash file path or a hash value? (Enter 'file' or 'hash')",
-            choices=["file", "hash"],
-            default="hash"
-        )
-        if hash_or_file == "hash":
-            hash_value = Prompt.ask("🔑 Enter the hash value directly")
-            return hash_value.strip(), None
-        else:
-            hash_file = Prompt.ask("📂 Enter the path to the hash file")
-            return None, hash_file.strip()
-    except KeyboardInterrupt:
-        console.print("\n[bold yellow]Cancelled.[/bold yellow] Returning to main menu.")
-        return None, None
-
-def ask_wordlist_and_mode():
-    wordlist = Prompt.ask("🔑 Enter the path to the wordlist", default="/usr/share/wordlists/rockyou.txt")
-    mode     = Prompt.ask("🔑 Enter the hash mode (default MD5, 0 for MD5)", default="0")
-    return wordlist.strip(), mode.strip()
-
-# --- NEW: manual vs auto output ---
 def ask_output_manual(tool):
-    filename = Prompt.ask(f"💾 Enter output filename (without extension) for {tool}", default="").strip()
-    directory = Prompt.ask("📂 Enter output directory (leave blank for auto)", default="").strip()
-    return filename, directory
+    fn = Prompt.ask(f"💾 Enter output filename (without extension) for {tool}", default="").strip()
+    d  = Prompt.ask("📂 Enter output directory (leave blank for auto)", default="").strip()
+    return fn, d
 
-def make_auto_folder(name):
+def make_auto_folder(base):
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    folder = f"{name.replace('.', '_')}_{ts}"
+    folder = f"{base.replace('.', '_')}_{ts}"
     os.makedirs(folder, exist_ok=True)
     return folder
-# ----------------------------------------
 
-def launch_in_tmux(tool_name, command, output_path=None):
-    try:
-        session_name = f"{tool_name}_session"
-        subprocess.call(["tmux", "kill-session", "-t", session_name], stderr=subprocess.DEVNULL)
-        if output_path:
-            command += f" > {output_path} 2>&1; read -p 'Press enter to return to menu...'"
-        else:
-            command += "; read -p 'Press enter to return to menu...'"
-        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
-            progress.add_task("Spawning tmux session...", total=None)
-        subprocess.call(["tmux", "new-session", "-s", session_name, "sh", "-c", command])
-        console.print(f"\n✅ {tool_name} session ended. Returning to menu...\n")
-    except Exception as e:
-        console.print(f"[bold red]Error launching '{tool_name}':[/bold red] {e}")
+def run_identifier():
+    # 1) ask output naming
+    fn, d = ask_output_manual("hash-identifier")
+    if fn == "" and d == "":
+        folder = make_auto_folder("identifier")
+        out = os.path.join(folder, "identifier.txt")
+    else:
+        folder = d or "."
+        os.makedirs(folder, exist_ok=True)
+        out = os.path.join(folder, f"{fn or 'identifier'}.txt")
+
+    # 2) launch tmux session: user types hash interactively
+    session = "hash-identifier_session"
+    subprocess.call([TMUX, "kill-session", "-t", session], stderr=subprocess.DEVNULL)
+    # tee captures all output, read pauses at end
+    full = f"hash-identifier 2>&1 | tee {out}; read -p 'Press enter to return...'"
+    subprocess.call([TMUX, "new-session", "-s", session, "sh", "-c", full])
+    console.print(f"[green]Logs & results saved to {out}[/green]")
 
 def run_hashcat():
-    hash_value, hash_file = ask_common_inputs_for_hashcat_john()
-    if not hash_value and not hash_file:
-        return
-    wordlist, mode = ask_wordlist_and_mode()
-
-    fn, dir_ = ask_output_manual("hashcat")
-    if fn == "" and dir_ == "":
-        target = "temp_hash" if hash_value else os.path.splitext(os.path.basename(hash_file))[0]
-        folder = make_auto_folder(target)
-        output_path = os.path.join(folder, f"hashcat_{target}.txt")
+    # 1) select hash input
+    kind = Prompt.ask("💬 Provide hash or file?", choices=["hash","file"], default="hash")
+    if kind == "hash":
+        hv = Prompt.ask("🔑 Enter the hash value").strip()
+        tmp = ".hc_tmp_hash"
+        with open(tmp, "w") as f:
+            f.write(hv + "\n")
+        target = tmp
+        base = hv
     else:
-        if dir_:
-            os.makedirs(dir_, exist_ok=True)
-        else:
-            dir_ = "."
-        output_path = os.path.join(dir_, f"{fn or 'hashcat_output'}.txt")
+        target = Prompt.ask("📂 Enter path to hash file").strip()
+        base = os.path.splitext(os.path.basename(target))[0]
 
-    if hash_value:
-        cmd = f"echo '{hash_value}' > temp_hash.txt && hashcat -m {mode} temp_hash.txt {wordlist} -o {output_path}"
+    # 2) wordlist & mode
+    wl   = Prompt.ask("🔑 Enter path to wordlist", default="/usr/share/wordlists/rockyou.txt").strip()
+    mode = Prompt.ask("🔑 Enter hashcat mode (e.g. 0 for MD5)", default="0").strip()
+
+    # 3) output naming
+    fn, d = ask_output_manual("hashcat")
+    if fn == "" and d == "":
+        folder = make_auto_folder(base)
+        out = os.path.join(folder, f"hashcat_{base}.txt")
     else:
-        cmd = f"hashcat -m {mode} -a 0 -o {output_path} {hash_file} {wordlist}"
+        folder = d or "."
+        os.makedirs(folder, exist_ok=True)
+        out = os.path.join(folder, f"{fn or 'hashcat'} .txt".replace(" .txt",".txt"))
 
-    launch_in_tmux("hashcat", cmd, output_path)
+    # 4) build & run
+    crack = f"hashcat -m {mode} -a 0 {target} {wl} -o {out}"
+    show  = f"hashcat -m {mode} -a 0 {target} {wl} --show >> {out}"
+    cmd   = f"{crack} && {show}"
+    session = "hashcat_session"
+    subprocess.call([TMUX, "kill-session", "-t", session], stderr=subprocess.DEVNULL)
+    full = f"{cmd} 2>&1 | tee -a {out}; read -p 'Press enter to return...'"
+    subprocess.call([TMUX, "new-session", "-s", session, "sh", "-c", full])
+    console.print(f"[green]Logs & results saved to {out}[/green]")
 
 def run_john():
-    hash_value, hash_file = ask_common_inputs_for_hashcat_john()
-    if not hash_value and not hash_file:
-        return
-    wordlist, _ = ask_wordlist_and_mode()
-
-    fn, dir_ = ask_output_manual("john")
-    if fn == "" and dir_ == "":
-        target = "temp_hash" if hash_value else os.path.splitext(os.path.basename(hash_file))[0]
-        folder = make_auto_folder(target)
-        output_path = os.path.join(folder, f"john_{target}.txt")
+    # 1) select hash input
+    kind = Prompt.ask("💬 Provide hash or file?", choices=["hash","file"], default="hash")
+    if kind == "hash":
+        hv = Prompt.ask("🔑 Enter the hash value").strip()
+        tmp = ".john_tmp_hash"
+        with open(tmp, "w") as f:
+            f.write(hv + "\n")
+        target = tmp
+        base = hv
     else:
-        if dir_:
-            os.makedirs(dir_, exist_ok=True)
-        else:
-            dir_ = "."
-        output_path = os.path.join(dir_, f"{fn or 'john_output'}.txt")
+        target = Prompt.ask("📂 Enter path to hash file").strip()
+        base = os.path.splitext(os.path.basename(target))[0]
 
-    if hash_value:
-        with open("temp_hash.txt", "w") as f:
-            f.write(hash_value + "\n")
-        cmd = f"john --wordlist={wordlist} --format=raw-md5 temp_hash.txt && john --show --format=raw-md5 temp_hash.txt > {output_path}"
+    # 2) wordlist
+    wl = Prompt.ask("🔑 Enter path to wordlist", default="/usr/share/wordlists/rockyou.txt").strip()
+
+    # 3) output naming
+    fn, d = ask_output_manual("john")
+    if fn == "" and d == "":
+        folder = make_auto_folder(base)
+        out = os.path.join(folder, f"john_{base}.txt")
     else:
-        cmd = f"john --wordlist={wordlist} --format=raw-md5 {hash_file} && john --show --format=raw-md5 {hash_file} > {output_path}"
+        folder = d or "."
+        os.makedirs(folder, exist_ok=True)
+        out = os.path.join(folder, f"{fn or 'john'}.txt")
 
-    launch_in_tmux("john", cmd, output_path)
+    # 4) build & run
+    crack = f"john --wordlist={wl} --format=raw-md5 {target}"
+    show  = f"john --show --format=raw-md5 {target} >> {out}"
+    cmd   = f"{crack} && {show}"
+    session = "john_session"
+    subprocess.call([TMUX, "kill-session", "-t", session], stderr=subprocess.DEVNULL)
+    full = f"{cmd} 2>&1 | tee -a {out}; read -p 'Press enter to return...'"
+    subprocess.call([TMUX, "new-session", "-s", session, "sh", "-c", full])
+    console.print(f"[green]Logs & results saved to {out}[/green]")
 
 def main():
     while True:
         console.print("\n[bold magenta]=== Password Cracking Menu ===[/bold magenta]")
-        console.print("[cyan][1][/cyan] hash-identifier")
-        console.print("[cyan][2][/cyan] hashcat")
-        console.print("[cyan][3][/cyan] john")
-        console.print("[cyan][4][/cyan] Exit")
-
-        choice = Prompt.ask("👉 Select an option", default="1").strip()
-
+        console.print("[cyan]\n[1][/cyan] hash-identifier")
+        console.print("[cyan]\n[2][/cyan] hashcat")
+        console.print("[cyan]\n[3][/cyan] john")
+        console.print("[cyan]\n[4][/cyan] Exit\n")
+        choice = Prompt.ask("👉 Select an option", choices=["1","2","3","4"], default="1")
         if choice == "1":
-            console.print("[bold green]Running hash-identifier...[/bold green]")
-            cmd = "hash-identifier"
-            launch_in_tmux("hash-identifier", cmd)
+            run_identifier()
         elif choice == "2":
             run_hashcat()
         elif choice == "3":
             run_john()
-        elif choice == "4":
+        else:
             console.print("[bold green]Exiting...[/bold green]")
             break
-        else:
-            console.print("[red]Invalid selection. Choose between 1-4.[/red]")
 
 if __name__ == "__main__":
     main()
