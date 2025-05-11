@@ -97,7 +97,13 @@ def individual_scan(choice, target, mode, folder):
     console.print(f"[cyan]🔍 Running [bold]{tool}[/bold] against {target} in {mode} mode...[/cyan]")
     output = func(target, mode)
     console.print(f"\n[white]{output}[/white]")
-    save_to_file(folder, f"{tool}_{target}.txt", output)
+    
+    if tool  == 'netdiscover':
+    	fname_target = target.replace('/','_').replace(':','_')
+    else:
+    	fname_target = target
+    	
+    save_to_file(folder, f"{tool}_{fname_target}.txt", output)
 
 def network_mapping_menu():
     print_banner()
@@ -139,8 +145,12 @@ def network_mapping_menu():
             mode = 'fast'
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        folder = f"{target.replace('.', '_')}_{timestamp}"
-
+        folder_target = (
+        target
+        .replace('.', '_')
+        .replace('/', '_')
+        .replace(':', '_'))
+        folder = f"{folder_target}_{timestamp}"
         individual_scan(choice, target, mode, folder)
 
 if __name__ == '__main__':
